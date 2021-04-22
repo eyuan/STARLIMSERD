@@ -19,6 +19,7 @@ namespace LimsDesign
     public partial class Form1 : Form
     {
         private DBType dbType = DBType.SqlServer;
+        private string[] tableFilterList = new string[] { };
         public Form1()
         {
             InitializeComponent();
@@ -31,6 +32,8 @@ namespace LimsDesign
             {
                 dbType = DBType.SqlServer;
             }
+            string TableFilters = ConfigurationManager.AppSettings["TableFilters"];
+            tableFilterList = TableFilters.Split(',');
         }
 
         private void GenerateDesignDoc()
@@ -417,7 +420,12 @@ namespace LimsDesign
 
         private void GenerateDesignMarkdown()
         {  
-            string sql = "select tablename, tableid, description from limstables where issystem = 'N' order by  tablename";
+            string sql = "select tablename, tableid, description from limstables where issystem = 'N' ";
+            foreach (string tableFilter in tableFilterList)
+            {
+                sql += " and TABLENAME " + tableFilter;
+            }
+            sql += " order by  tablename ";
             string sqlMSSql = sql;
             string sqlOracle = sql;
             DataTable dataTable = null;
@@ -460,7 +468,11 @@ namespace LimsDesign
                 sb.AppendLine();
                 string tableFields = "";
                 string tableFieldsUpdateSql = "";
-                sql = @"select f.name,f.description,f.type,f.defaultvalue,f.isnullable, r.caption 
+                string tableFieldsDefineMySql = "";
+                string tableFieldsDefineSqlServer = "";
+                string tableFieldsDefineOracle = "";
+                string tableFieldsCommentOracle = "";
+                sql = @"select f.name,f.description,f.type,f.defaultvalue,f.isnullable, r.caption ,f.length,f.scale
                     from LIMSTABLEFIELDS f
                     left join LIMSTABLERESOURCES r 
                         on f.TABLEID = r.TABLEID 
@@ -484,8 +496,8 @@ namespace LimsDesign
                     bgw.ReportProgress(++iTable);
                     continue;
                 }
-                sb.AppendLine("| 字段名 | 字段描述 | 数据类型 | 默认值 | 可空? | 标题 |");
-                sb.AppendLine("| ------ | ------------ | ------ | ------ | ------ | ------------ |");
+                sb.AppendLine("| 字段名 | 字段描述 | 数据类型 | 长度 | 精度 | 默认值 | 可空? | 标题 |");
+                sb.AppendLine("| ------ | ------------ | ------ | ------ | ------ | ------ | ------ | ------------ |");
                 int rowIndex = 1;
                 //循环字段
                 foreach (DataRow drField in dtField.Rows)
@@ -495,14 +507,105 @@ namespace LimsDesign
                     tableFields += (name + ", ");
                     tableFieldsUpdateSql += (name + "=?"+name+"?, ");
                     string fdescription = drField["description"].ToString();
+
+                    #region type length scale
                     string type = drField["type"].ToString();
+                    string length = drField["length"].ToString();
+                    string scale = drField["scale"].ToString();
+                    string typeAllMySql = "";
+                    string typeAllOracle = "";
+                    string typeAllSqlServer = "";
+                    switch (type)
+                    {
+                        case "INTEGER":
+                            typeAllMySql += " INT";
+                            typeAllOracle += " INTEGER";
+                            typeAllSqlServer += " INT";
+                            break;
+                        case "CHAR":
+                            typeAllMySql += " CHAR(" + length + ")";
+                            typeAllOracle += " NCHAR(" + length + ")";
+                            typeAllSqlServer += " NCHAR(" + length + ")";
+                            break;
+                        case "VARCHAR":
+                            typeAllMySql += " VARCHAR(" + length + ")";
+                            typeAllOracle += " NVARCHAR2(" + length + ")";
+                            typeAllSqlServer += " NVARCHAR(" + length + ")";
+                            break;
+                        case "DATE":
+                            typeAllMySql += " DATETIME";
+                            typeAllOracle += " DATE";
+                            typeAllSqlServer += " DATETIME";
+                            break;
+                        case "DECIMAL":
+                            typeAllMySql += " DECIMAL(" + length + "," + scale + ")";
+                            typeAllOracle += " NUMBER(" + length + "," + scale + ")";
+                            typeAllSqlServer += " NUMERIC(" + length + "," + scale + ")";
+                            break;
+                        case "LONGVARBINARY":
+                            typeAllMySql += " BLOB";
+                            typeAllOracle += " BLOB";
+                            typeAllSqlServer += " BINARY";
+                            break;
+                        case "LONGVARCHAR":
+                            typeAllMySql += " TEXT";
+                            typeAllOracle += " CLOB";
+                            typeAllSqlServer += " TEXT";
+                            break;
+                        default:
+                            typeAllMySql = type;
+                            break;
+                    }
+                    #endregion
                     string defaultvalue = drField["defaultvalue"].ToString();
                     string isnullable = drField["isnullable"].ToString();
                     string caption = drField["caption"].ToString();
-                    sb.AppendLine("| "+name+ " | "+fdescription+ " | "+type + " | "+defaultvalue + " | "+isnullable + " | "+caption + " |");  
+                    sb.AppendLine("| "+name+ " | "+fdescription+ " | "+type + " | " + length+ " | " + scale  + " | "+defaultvalue + " | "+isnullable + " | "+caption + " |");
+                    tableFieldsDefineMySql += (name + typeAllMySql);
+                    tableFieldsDefineSqlServer += (name + typeAllSqlServer);
+                    tableFieldsDefineOracle += (name + typeAllOracle);
+
+                    #region 允许空
+                    switch (isnullable)
+                    {
+                        case "Y":
+                            tableFieldsDefineMySql += " NULL";
+                            tableFieldsDefineSqlServer += " NULL";
+                            tableFieldsDefineOracle += " NULL";
+                            break;
+                        case "N":
+                            tableFieldsDefineMySql += " NOT NULL";
+                            tableFieldsDefineSqlServer += " NOT NULL";
+                            tableFieldsDefineOracle += " NOT NULL";
+                            break; 
+                    }
+                    #endregion
+
+                    #region 备注
+                    if (!string.IsNullOrEmpty(caption)) {
+                        tableFieldsDefineMySql += " COMMENT '"+caption+"' ";
+                        tableFieldsCommentOracle += ("COMMENT ON COLUMN " + tablename + "." + name + " IS '" + caption + "';" + Environment.NewLine);
+                    }
+                    #endregion
+
+                    #region 默认值
+                    if (!string.IsNullOrEmpty(defaultvalue))
+                    { 
+                        //tableFieldsDefineMySql += " DEFAULT '" + defaultvalue + "'";
+                        //tableFieldsDefineSqlServer += " DEFAULT '" + defaultvalue + "'";
+                        //tableFieldsDefineOracle += " DEFAULT '" + defaultvalue + "'";
+                    }
+                    #endregion
+
+                    tableFieldsDefineMySql += (","+ Environment.NewLine);
+                    tableFieldsDefineSqlServer += ("," + Environment.NewLine);
+                    tableFieldsDefineOracle += ("," + Environment.NewLine);
                 }
                 tableFields = tableFields.Substring(0, tableFields.Length - 2);
                 tableFieldsUpdateSql = tableFieldsUpdateSql.Substring(0, tableFieldsUpdateSql.Length - 2);
+                tableFieldsDefineMySql = tableFieldsDefineMySql.Substring(0, tableFieldsDefineMySql.Length - 3);
+                tableFieldsDefineSqlServer = tableFieldsDefineSqlServer.Substring(0, tableFieldsDefineSqlServer.Length - 3);
+                tableFieldsDefineOracle = tableFieldsDefineOracle.Substring(0, tableFieldsDefineOracle.Length - 3);
                 sb.AppendLine();
                 #endregion
 
@@ -713,6 +816,64 @@ namespace LimsDesign
                 sb.AppendLine();
                 #endregion
 
+                #region DDL语句生成
+                head1Index++;
+                sb.AppendLine("# " + head1Index + " SQL");
+                sb.AppendLine();
+                head2Index = 0;
+
+                #region create mysql
+                head2Index++;
+                sb.AppendLine("## " + head1Index + "." + head2Index + " mysql craete 创建表语句");
+                sb.AppendLine();
+                sb.AppendLine("```sql");
+                string createTableSql = "create table " + tablename + " (" 
+                    + Environment.NewLine+ tableFieldsDefineMySql
+                    + Environment.NewLine + ") ";
+                if (!string.IsNullOrEmpty(description))
+                {
+                    createTableSql += " COMMENT '" + description + "'";
+                }
+                createTableSql += ";";
+                sb.AppendLine(createTableSql);
+                sb.AppendLine("```");
+                sb.AppendLine();
+                #endregion
+
+                #region create sqlserver
+                head2Index++;
+                sb.AppendLine("## " + head1Index + "." + head2Index + " sql server craete 创建表语句");
+                sb.AppendLine();
+                sb.AppendLine("```sql");
+                createTableSql = "create table " + tablename + " ("
+                    + Environment.NewLine + tableFieldsDefineSqlServer
+                    + Environment.NewLine + ") "; 
+                createTableSql += ";";
+                sb.AppendLine(createTableSql);
+                sb.AppendLine("```");
+                sb.AppendLine();
+                #endregion
+
+                #region create oracle
+                head2Index++;
+                sb.AppendLine("## " + head1Index + "." + head2Index + " oracle craete 创建表语句");
+                sb.AppendLine();
+                sb.AppendLine("```sql");
+                createTableSql = "create table " + tablename + " ("
+                    + Environment.NewLine + tableFieldsDefineOracle
+                    + Environment.NewLine + ") ;"; 
+                sb.AppendLine(createTableSql);
+                sb.AppendLine(tableFieldsCommentOracle);//oracle备注
+                if (!string.IsNullOrEmpty(description))
+                {
+                    sb.AppendLine("COMMENT ON TABLE "+tablename+" IS '"+description+"';");
+                }
+                sb.AppendLine("```");
+                sb.AppendLine();
+                #endregion
+
+                #endregion
+
                 #region DML语句生成
                 head1Index++;
                 sb.AppendLine("# " + head1Index + " SQL");
@@ -816,7 +977,11 @@ namespace LimsDesign
             tsbtnExportTableDefine2Markdown.Enabled = false;
             tsbtnExportTableDefine2Word.Enabled = false;
             //
-            string sql = "select count(1) from limstables where issystem = 'N' ";
+            string sql = "select count(1) from limstables where issystem = 'N' " ;
+            foreach(string tableFilter in tableFilterList)
+            {
+                sql += " and TABLENAME " +tableFilter;
+            }
             int count = 1;
             if (dbType == DBType.SqlServer)
             {
